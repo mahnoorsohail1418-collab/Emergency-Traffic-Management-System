@@ -1,0 +1,732 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+
+#define MAX_NODES 100
+#define MAX_VEHICLES 100
+#define MAX_QUEUE_SIZE 500
+
+struct Edge {
+    int destination;
+    int travel_time;
+    int current_density;
+    struct Edge* next;
+};
+
+struct GraphNode {
+    int id;
+    char name[50];
+    struct Edge* adjacency_list;
+    int traffic_light_status;
+    int vehicle_queue_count;
+};
+
+struct Graph {
+    struct GraphNode* nodes[MAX_NODES];
+    int node_count;
+};
+
+struct Vehicle {
+    int vehicle_id;
+    int current_node;
+    int destination_node;
+    int emergency_status;
+    int scheduled_route[MAX_NODES];
+    int route_length;
+    char vehicle_type[20];
+};
+
+struct QueueNode {
+    int vehicle_id;
+    int node_id;
+    struct QueueNode* next;
+};
+
+struct TrafficQueue {
+    struct QueueNode* front;
+    struct QueueNode* rear;
+    int size;
+};
+
+struct EmergencyStack {
+    int vehicle_ids[MAX_VEHICLES];
+    int top;
+};
+
+struct RouteCache {
+    int source;
+    int dest;
+    int path[MAX_NODES];
+    int length;
+    int is_cached;
+};
+
+struct Graph* create_graph() {
+    struct Graph* g = (struct Graph*)malloc(sizeof(struct Graph));
+    g->node_count = 0;
+    for(int i = 0; i < MAX_NODES; i++) {
+        g->nodes[i] = NULL;
+    }
+    return g;
+}
+
+void add_node(struct Graph* g, int id, char* name) {
+    struct GraphNode* new_node = (struct GraphNode*)malloc(sizeof(struct GraphNode));
+    new_node->id = id;
+    strcpy(new_node->name, name);
+    new_node->adjacency_list = NULL;
+    new_node->traffic_light_status = 60;
+    new_node->vehicle_queue_count = 0;
+    g->nodes[id] = new_node;
+    g->node_count++;
+}
+
+void add_edge(struct Graph* g, int src, int dest, int time, int density) {
+    struct Edge* new_edge = (struct Edge*)malloc(sizeof(struct Edge));
+    new_edge->destination = dest;
+    new_edge->travel_time = time;
+    new_edge->current_density = density;
+    new_edge->next = g->nodes[src]->adjacency_list;
+    g->nodes[src]->adjacency_list = new_edge;
+    
+    struct Edge* new_edge_rev = (struct Edge*)malloc(sizeof(struct Edge));
+    new_edge_rev->destination = src;
+    new_edge_rev->travel_time = time;
+    new_edge_rev->current_density = density;
+    new_edge_rev->next = g->nodes[dest]->adjacency_list;
+    g->nodes[dest]->adjacency_list = new_edge_rev;
+}
+
+void update_traffic_density(struct Graph* g, int node_id, int density) {
+    if(g->nodes[node_id] != NULL) {
+        g->nodes[node_id]->vehicle_queue_count = density / 10;
+        
+        if(density > 70) {
+            g->nodes[node_id]->traffic_light_status = 30;
+        } else if(density > 40) {
+            g->nodes[node_id]->traffic_light_status = 45;
+        } else {
+            g->nodes[node_id]->traffic_light_status = 60;
+        }
+    }
+}
+
+int get_current_density(struct Graph* g, int node_id) {
+    if(g->nodes[node_id] != NULL) {
+        return g->nodes[node_id]->vehicle_queue_count * 10;
+    }
+    return 0;
+}
+
+void bubble_sort_distances(int* distances, int* nodes, int n) {
+    for(int i = 0; i < n - 1; i++) {
+        for(int j = 0; j < n - i - 1; j++) {
+            if(distances[j] > distances[j + 1]) {
+                int temp_dist = distances[j];
+                distances[j] = distances[j + 1];
+                distances[j + 1] = temp_dist;
+                
+                int temp_node = nodes[j];
+                nodes[j] = nodes[j + 1];
+                nodes[j + 1] = temp_node;
+            }
+        }
+    }
+}
+
+int* dijkstra_shortest_path(struct Graph* g, int src, int dest, int* path_length) {
+    int* distances = (int*)malloc(MAX_NODES * sizeof(int));
+    int* previous = (int*)malloc(MAX_NODES * sizeof(int));
+    int* visited = (int*)malloc(MAX_NODES * sizeof(int));
+    int* unvisited_nodes = (int*)malloc(MAX_NODES * sizeof(int));
+    int* unvisited_distances = (int*)malloc(MAX_NODES * sizeof(int));
+    int unvisited_count;
+    
+    for(int i = 0; i < MAX_NODES; i++) {
+        distances[i] = INT_MAX;
+        previous[i] = -1;
+        visited[i] = 0;
+    }
+    
+    distances[src] = 0;
+    
+    for(int step = 0; step < MAX_NODES; step++) {
+        unvisited_count = 0;
+        for(int i = 0; i < MAX_NODES; i++) {
+            if(g->nodes[i] != NULL && visited[i] == 0) {
+                unvisited_nodes[unvisited_count] = i;
+                unvisited_distances[unvisited_count] = distances[i];
+                unvisited_count++;
+            }
+        }
+        
+        bubble_sort_distances(unvisited_distances, unvisited_nodes, unvisited_count);
+        
+        int u = -1;
+        for(int i = 0; i < unvisited_count; i++) {
+            if(unvisited_distances[i] < INT_MAX) {
+                u = unvisited_nodes[i];
+                break;
+            }
+        }
+        
+        if(u == -1 || u == dest) break;
+        
+        visited[u] = 1;
+        
+        struct Edge* edge = g->nodes[u]->adjacency_list;
+        while(edge != NULL) {
+            int v = edge->destination;
+            int density = get_current_density(g, v);
+            int congestion_factor = 1 + (density / 50);
+            int weight = edge->travel_time * congestion_factor;
+            
+            if(visited[v] == 0 && distances[u] != INT_MAX && distances[u] + weight < distances[v]) {
+                distances[v] = distances[u] + weight;
+                previous[v] = u;
+            }
+            edge = edge->next;
+        }
+    }
+    
+    int* path = (int*)malloc(MAX_NODES * sizeof(int));
+    *path_length = 0;
+    int current_node = dest;
+    
+    if(previous[current_node] == -1 && current_node != src) {
+        free(distances);
+        free(previous);
+        free(visited);
+        free(unvisited_nodes);
+        free(unvisited_distances);
+        return NULL;
+    }
+    
+    while(current_node != -1) {
+        path[(*path_length)++] = current_node;
+        current_node = previous[current_node];
+    }
+    
+    for(int i = 0; i < (*path_length) / 2; i++) {
+        int temp = path[i];
+        path[i] = path[*path_length - 1 - i];
+        path[*path_length - 1 - i] = temp;
+    }
+    
+    free(distances);
+    free(previous);
+    free(visited);
+    free(unvisited_nodes);
+    free(unvisited_distances);
+    return path;
+}
+
+struct TrafficQueue* create_traffic_queue() {
+    struct TrafficQueue* q = (struct TrafficQueue*)malloc(sizeof(struct TrafficQueue));
+    q->front = NULL;
+    q->rear = NULL;
+    q->size = 0;
+    return q;
+}
+
+void enqueue_vehicle(struct TrafficQueue* q, int vehicle_id, int node_id) {
+    struct QueueNode* new_node = (struct QueueNode*)malloc(sizeof(struct QueueNode));
+    new_node->vehicle_id = vehicle_id;
+    new_node->node_id = node_id;
+    new_node->next = NULL;
+    
+    if(q->rear == NULL) {
+        q->front = new_node;
+        q->rear = new_node;
+    } else {
+        q->rear->next = new_node;
+        q->rear = new_node;
+    }
+    q->size++;
+}
+
+int dequeue_vehicle(struct TrafficQueue* q, int* node_id) {
+    if(q->front == NULL) return -1;
+    
+    struct QueueNode* temp = q->front;
+    int vehicle_id = temp->vehicle_id;
+    *node_id = temp->node_id;
+    q->front = q->front->next;
+    
+    if(q->front == NULL) {
+        q->rear = NULL;
+    }
+    
+    free(temp);
+    q->size--;
+    return vehicle_id;
+}
+
+void process_intersection_queue(struct TrafficQueue* q, struct Graph* g, int node_id) {
+    if(q->size == 0) {
+        printf("No vehicles at %s\n", g->nodes[node_id]->name);
+        return;
+    }
+    
+    int vehicles_to_process = (q->size > 3) ? 3 : q->size;
+    printf("\nProcessing %s (Light: %d sec)\n", g->nodes[node_id]->name, g->nodes[node_id]->traffic_light_status);
+    printf("Queue size: %d\n", q->size);
+    
+    for(int i = 0; i < vehicles_to_process; i++) {
+        int processed_node;
+        int vehicle_id = dequeue_vehicle(q, &processed_node);
+        if(vehicle_id != -1) {
+            printf("  Vehicle %d passed\n", vehicle_id);
+        }
+    }
+    printf("Remaining: %d\n\n", q->size);
+}
+
+struct EmergencyStack* create_emergency_stack() {
+    struct EmergencyStack* stack = (struct EmergencyStack*)malloc(sizeof(struct EmergencyStack));
+    stack->top = -1;
+    return stack;
+}
+
+void push_emergency(struct EmergencyStack* stack, int vehicle_id) {
+    if(stack->top < MAX_VEHICLES - 1) {
+        stack->vehicle_ids[++stack->top] = vehicle_id;
+        printf("EMERGENCY: Vehicle %d added to stack\n", vehicle_id);
+    }
+}
+
+int pop_emergency(struct EmergencyStack* stack) {
+    if(stack->top >= 0) {
+        int vehicle = stack->vehicle_ids[stack->top--];
+        printf("Emergency vehicle %d cleared\n", vehicle);
+        return vehicle;
+    }
+    return -1;
+}
+
+int peek_emergency(struct EmergencyStack* stack) {
+    if(stack->top >= 0) {
+        return stack->vehicle_ids[stack->top];
+    }
+    return -1;
+}
+
+void clear_route_for_emergency(struct Graph* g, int emergency_vehicle_id, int src, int dest) {
+    printf("\n=== EMERGENCY ROUTING ===\n");
+    printf("Clearing path from %s to %s\n", g->nodes[src]->name, g->nodes[dest]->name);
+    
+    int path_length;
+    int* path = dijkstra_shortest_path(g, src, dest, &path_length);
+    
+    if(path != NULL) {
+        printf("EMERGENCY PATH: ");
+        for(int i = 0; i < path_length; i++) {
+            printf("%s", g->nodes[path[i]]->name);
+            g->nodes[path[i]]->traffic_light_status = 20;
+            if(i < path_length - 1) printf(" -> ");
+        }
+        printf("\nAll lights on route set to 20 sec\n");
+        free(path);
+    }
+}
+
+struct RouteCache route_cache[MAX_VEHICLES];
+int cache_count = 0;
+
+void cache_route(int src, int dest, int* path, int length) {
+    if(cache_count < MAX_VEHICLES) {
+        route_cache[cache_count].source = src;
+        route_cache[cache_count].dest = dest;
+        route_cache[cache_count].length = length;
+        route_cache[cache_count].is_cached = 1;
+        for(int i = 0; i < length; i++) {
+            route_cache[cache_count].path[i] = path[i];
+        }
+        cache_count++;
+    }
+}
+
+int find_cached_route(int src, int dest, int* path, int* length) {
+    for(int i = 0; i < cache_count; i++) {
+        if(route_cache[i].source == src && route_cache[i].dest == dest && route_cache[i].is_cached == 1) {
+            *length = route_cache[i].length;
+            for(int j = 0; j < *length; j++) {
+                path[j] = route_cache[i].path[j];
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+struct Vehicle* create_vehicle(int id, char* type, int start, int dest, int emergency) {
+    struct Vehicle* v = (struct Vehicle*)malloc(sizeof(struct Vehicle));
+    v->vehicle_id = id;
+    v->current_node = start;
+    v->destination_node = dest;
+    v->emergency_status = emergency;
+    v->route_length = 0;
+    strcpy(v->vehicle_type, type);
+    return v;
+}
+
+void find_route_for_vehicle(struct Graph* g, struct Vehicle* v) {
+    int found = find_cached_route(v->current_node, v->destination_node, v->scheduled_route, &v->route_length);
+    
+    if(found == 1) {
+        printf("Cached route for %s %d\n", v->vehicle_type, v->vehicle_id);
+    } else {
+        printf("New route for %s %d\n", v->vehicle_type, v->vehicle_id);
+        int* new_path = dijkstra_shortest_path(g, v->current_node, v->destination_node, &v->route_length);
+        if(new_path != NULL) {
+            for(int i = 0; i < v->route_length; i++) {
+                v->scheduled_route[i] = new_path[i];
+            }
+            cache_route(v->current_node, v->destination_node, new_path, v->route_length);
+            free(new_path);
+        }
+    }
+    
+    printf("Route: ");
+    for(int i = 0; i < v->route_length; i++) {
+        printf("%s", g->nodes[v->scheduled_route[i]]->name);
+        if(i < v->route_length - 1) printf(" -> ");
+    }
+    printf("\n");
+}
+
+void add_vehicle_to_route(struct Graph* g, struct TrafficQueue* queues[], int vehicle_id, int start, int dest) {
+    int path_len;
+    int* path = dijkstra_shortest_path(g, start, dest, &path_len);
+    
+    if(path != NULL) {
+        for(int i = 0; i < path_len; i++) {
+            enqueue_vehicle(queues[path[i]], vehicle_id, path[i]);
+            g->nodes[path[i]]->vehicle_queue_count++;
+            
+            int new_density = g->nodes[path[i]]->vehicle_queue_count * 10;
+            if(new_density > 100) new_density = 100;
+            update_traffic_density(g, path[i], new_density);
+        }
+        free(path);
+    }
+}
+
+void display_menu() {
+    printf("\n================================================================\n");
+    printf("     TRAFFIC MANAGEMENT SYSTEM\n");
+    printf("================================================================\n");
+    printf(" 1. Register Vehicle\n");
+    printf(" 2. Register Emergency Vehicle\n");
+    printf(" 3. Find Shortest Route\n");
+    printf(" 4. Update Traffic Density\n");
+    printf(" 5. View Traffic Status\n");
+    printf(" 6. Emergency Routing\n");
+    printf(" 7. Process Queues\n");
+    printf(" 8. Display Network\n");
+    printf(" 9. Show Emergency Stack\n");
+    printf("10. Exit\n");
+    printf("Choice: ");
+}
+
+void display_network(struct Graph* g) {
+    printf("\n================================================================\n");
+    printf("ROAD NETWORK\n");
+    
+    for(int i = 0; i < MAX_NODES && g->nodes[i] != NULL; i++) {
+        if(g->nodes[i] != NULL) {
+            printf("\n%s (ID:%d)\n", g->nodes[i]->name, g->nodes[i]->id);
+            printf("  Light: %d sec | Queue: %d\n", g->nodes[i]->traffic_light_status, g->nodes[i]->vehicle_queue_count);
+            printf("  Roads:\n");
+            
+            struct Edge* edge = g->nodes[i]->adjacency_list;
+            while(edge != NULL) {
+                printf("    -> %s (Time:%d min, Density:%d)\n", 
+                       g->nodes[edge->destination]->name, 
+                       edge->travel_time, 
+                       edge->current_density);
+                edge = edge->next;
+            }
+        }
+    }
+}
+
+void view_traffic(struct Graph* g) {
+    printf("\n================================================================\n");
+    printf("TRAFFIC REPORT\n");
+    
+    for(int i = 0; i < MAX_NODES && g->nodes[i] != NULL; i++) {
+        if(g->nodes[i] != NULL) {
+            int density = get_current_density(g, i);
+            char status[20];
+            
+            if(density > 70) {
+                strcpy(status, "HEAVY");
+            } else if(density > 40) {
+                strcpy(status, "MODERATE");
+            } else {
+                strcpy(status, "LIGHT");
+            }
+            
+            printf("\n%s (ID:%d)\n", g->nodes[i]->name, g->nodes[i]->id);
+            printf("  Status: %s | Density: %d%%\n", status, density);
+            printf("  Light: %d sec | Waiting: %d\n", g->nodes[i]->traffic_light_status, g->nodes[i]->vehicle_queue_count);
+        }
+    }
+}
+
+void process_all_queues(struct Graph* g, struct TrafficQueue* queues[]) {
+    printf("\n================================================================\n");
+    printf("PROCESSING INTERSECTIONS\n");
+    
+    for(int i = 0; i < MAX_NODES && g->nodes[i] != NULL; i++) {
+        if(queues[i] != NULL && queues[i]->size > 0) {
+            process_intersection_queue(queues[i], g, i);
+        }
+    }
+}
+
+void show_emergency_stack(struct EmergencyStack* stack) {
+    printf("\n================================================================\n");
+    printf("EMERGENCY STACK\n");
+    
+    if(stack->top == -1) {
+        printf("No emergency vehicles\n");
+    } else {
+        printf("Active emergencies (top to bottom):\n");
+        for(int i = stack->top; i >= 0; i--) {
+            printf("  %d\n", stack->vehicle_ids[i]);
+        }
+    }
+}
+
+int main() {
+    struct Graph* traffic_graph = create_graph();
+    struct EmergencyStack* emergency_stack = create_emergency_stack();
+    struct TrafficQueue* intersection_queues[MAX_NODES];
+    
+    for(int i = 0; i < MAX_NODES; i++) {
+        intersection_queues[i] = create_traffic_queue();
+    }
+    
+    add_node(traffic_graph, 0, "Central Station");
+    add_node(traffic_graph, 1, "Main Street");
+    add_node(traffic_graph, 2, "Hospital");
+    add_node(traffic_graph, 3, "Downtown");
+    add_node(traffic_graph, 4, "North Bridge");
+    add_node(traffic_graph, 5, "East Gate");
+    add_node(traffic_graph, 6, "West Road");
+    add_node(traffic_graph, 7, "South Park");
+    add_node(traffic_graph, 8, "Airport");
+    add_node(traffic_graph, 9, "Police Station");
+    
+    add_edge(traffic_graph, 0, 1, 5, 20);
+    add_edge(traffic_graph, 1, 2, 4, 15);
+    add_edge(traffic_graph, 2, 3, 6, 30);
+    add_edge(traffic_graph, 3, 4, 7, 25);
+    add_edge(traffic_graph, 4, 5, 8, 20);
+    add_edge(traffic_graph, 5, 6, 5, 15);
+    add_edge(traffic_graph, 6, 7, 6, 30);
+    add_edge(traffic_graph, 7, 8, 7, 25);
+    add_edge(traffic_graph, 8, 9, 4, 20);
+    add_edge(traffic_graph, 0, 9, 10, 15);
+    add_edge(traffic_graph, 2, 7, 8, 35);
+    add_edge(traffic_graph, 1, 5, 6, 25);
+    
+    int vehicle_counter = 1000;
+    int choice;
+    char vehicle_type[20];
+    int start_id, dest_id, density;
+    
+    printf("\nTRAFFIC MANAGEMENT SYSTEM STARTED\n");
+    
+    update_traffic_density(traffic_graph, 0, 30);
+    update_traffic_density(traffic_graph, 1, 45);
+    update_traffic_density(traffic_graph, 2, 60);
+    update_traffic_density(traffic_graph, 3, 35);
+    update_traffic_density(traffic_graph, 4, 25);
+    
+    while(1) {
+        display_menu();
+        scanf("%d", &choice);
+        
+        switch(choice) {
+            case 1: {
+                printf("\n--- REGISTER VEHICLE ---\n");
+                printf("Type (Car/Bus/Truck): ");
+                scanf("%s", vehicle_type);
+                printf("Start node (0-9): ");
+                scanf("%d", &start_id);
+                printf("Destination (0-9): ");
+                scanf("%d", &dest_id);
+                
+                if(traffic_graph->nodes[start_id] == NULL || traffic_graph->nodes[dest_id] == NULL) {
+                    printf("ERROR: Invalid node ID\n");
+                    break;
+                }
+                
+                struct Vehicle* v = create_vehicle(vehicle_counter++, vehicle_type, start_id, dest_id, 0);
+                find_route_for_vehicle(traffic_graph, v);
+                add_vehicle_to_route(traffic_graph, intersection_queues, v->vehicle_id, start_id, dest_id);
+                free(v);
+                break;
+            }
+            
+            case 2: {
+                printf("\n--- REGISTER EMERGENCY ---\n");
+                printf("Type (Ambulance/Fire/Police): ");
+                scanf("%s", vehicle_type);
+                printf("Start node (0-9): ");
+                scanf("%d", &start_id);
+                printf("Destination (0-9): ");
+                scanf("%d", &dest_id);
+                
+                if(traffic_graph->nodes[start_id] == NULL || traffic_graph->nodes[dest_id] == NULL) {
+                    printf("ERROR: Invalid node ID\n");
+                    break;
+                }
+                
+                int eid = vehicle_counter++;
+                struct Vehicle* ev = create_vehicle(eid, vehicle_type, start_id, dest_id, 1);
+                push_emergency(emergency_stack, ev->vehicle_id);
+                find_route_for_vehicle(traffic_graph, ev);
+                add_vehicle_to_route(traffic_graph, intersection_queues, ev->vehicle_id, start_id, dest_id);
+                free(ev);
+                break;
+            }
+            
+            case 3: {
+                printf("\n--- SHORTEST ROUTE ---\n");
+                printf("Start node (0-9): ");
+                scanf("%d", &start_id);
+                printf("Destination (0-9): ");
+                scanf("%d", &dest_id);
+                
+                if(traffic_graph->nodes[start_id] == NULL || traffic_graph->nodes[dest_id] == NULL) {
+                    printf("ERROR: Invalid node ID\n");
+                    break;
+                }
+                
+                int path_len;
+                int* path = dijkstra_shortest_path(traffic_graph, start_id, dest_id, &path_len);
+                
+                if(path != NULL) {
+                    printf("\nPATH: ");
+                    int total = 0;
+                    for(int i = 0; i < path_len; i++) {
+                        printf("%s", traffic_graph->nodes[path[i]]->name);
+                        if(i < path_len - 1) {
+                            printf(" -> ");
+                            struct Edge* e = traffic_graph->nodes[path[i]]->adjacency_list;
+                            while(e != NULL) {
+                                if(e->destination == path[i+1]) {
+                                    int d = get_current_density(traffic_graph, path[i+1]);
+                                    int travel = e->travel_time * (1 + d/50);
+                                    total += travel;
+                                    printf("(%d min)", travel);
+                                    break;
+                                }
+                                e = e->next;
+                            }
+                        }
+                    }
+                    printf("\nTOTAL TIME: %d minutes\n", total);
+                    free(path);
+                } else {
+                    printf("NO PATH FOUND\n");
+                }
+                break;
+            }
+            
+            case 4: {
+                printf("\n--- UPDATE DENSITY ---\n");
+                printf("Node ID (0-9): ");
+                scanf("%d", &start_id);
+                printf("Density (0-100): ");
+                scanf("%d", &density);
+                
+                if(traffic_graph->nodes[start_id] == NULL) {
+                    printf("ERROR: Invalid node\n");
+                    break;
+                }
+                if(density < 0 || density > 100) {
+                    printf("ERROR: Density must be 0-100\n");
+                    break;
+                }
+                
+                update_traffic_density(traffic_graph, start_id, density);
+                
+                printf("Traffic at %s: %s | Light: %d sec\n", 
+                       traffic_graph->nodes[start_id]->name,
+                       (density > 70) ? "HEAVY" : ((density > 40) ? "MODERATE" : "LIGHT"),
+                       traffic_graph->nodes[start_id]->traffic_light_status);
+                
+                break;
+            }
+            
+            case 5: {
+                view_traffic(traffic_graph);
+                break;
+            }
+            
+            case 6: {
+                printf("\n--- EMERGENCY ROUTING ---\n");
+                if(emergency_stack->top == -1) {
+                    printf("No emergency vehicles\n");
+                    break;
+                }
+                
+                printf("Source node: ");
+                scanf("%d", &start_id);
+                printf("Destination node: ");
+                scanf("%d", &dest_id);
+                
+                if(traffic_graph->nodes[start_id] == NULL || traffic_graph->nodes[dest_id] == NULL) {
+                    printf("ERROR: Invalid node\n");
+                    break;
+                }
+                
+                clear_route_for_emergency(traffic_graph, peek_emergency(emergency_stack), start_id, dest_id);
+                pop_emergency(emergency_stack);
+                break;
+            }
+            
+            case 7: {
+                process_all_queues(traffic_graph, intersection_queues);
+                break;
+            }
+            
+            case 8: {
+                display_network(traffic_graph);
+                break;
+            }
+            
+            case 9: {
+                show_emergency_stack(emergency_stack);
+                break;
+            }
+            
+            case 10: {
+                printf("\nSHUTTING DOWN...\n");
+                printf("System terminated.\n");
+                
+                for(int i = 0; i < MAX_NODES; i++) {
+                    if(intersection_queues[i] != NULL) {
+                        free(intersection_queues[i]);
+                    }
+                }
+                free(emergency_stack);
+                free(traffic_graph);
+                return 0;
+            }
+            
+            default: {
+                printf("ERROR: Invalid choice (1-10 only)\n");
+                break;
+            }
+        }
+    }
+    
+    return 0;
+}
